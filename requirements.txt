@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+sqlalchemy
+psycopg2
+pgvector
+pydantic
+torch
+sentence-transformers
+redis
+requests
+python-dotenv
