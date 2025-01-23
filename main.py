@@ -1,30 +1,26 @@
-from fastapi import Depends, FastAPI
-import os
+import json
+from fastapi import  FastAPI, HTTPException
+
 import numpy as np
-import redis
-from requests import Session
-import torch
+
+
+
 from dotenv import load_dotenv
 from sentence_transformers import SentenceTransformer
 from torch import cosine_similarity
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
-import models
-from db import engine,SessionLocal
-from typing import Annotated
+
+from typing import  Optional
+
+
+from db import supabase
 
 
 load_dotenv()
 
 
-# REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
-# REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
-# REDIS_DB = int(os.getenv("REDIS_DB", 0))
-# REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", None)
 
-
-# Initialize FastAPI
-models.Base.metadata.create_all(bind=engine)
 app = FastAPI()
 
 
@@ -36,94 +32,80 @@ app.add_middleware(
     allow_headers=["*"],  # Allows all headers
 )
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-        
-# def get_redis():
-#     return redis.Redis(host="localhost", port=6379, db=0, decode_responses=True)
 
-# Load Sentence Transformer model
 model = SentenceTransformer('all-MiniLM-L6-v2')
-db_dependency = Annotated[SessionLocal(), Depends(get_db)]
+
 class metric(BaseModel):
-    query: str
-    description: str
-    metric_name: str
-  
+    query: Optional[str] = None
+    metric_name: Optional[str] = None
+    description: Optional[str] = None
+
+def cosine_similarity(vec1, vec2):
+    """Compute cosine similarity between two vectors."""
+    if not vec1 or not vec2:
+        return 0
+    vec1, vec2 = np.array(vec1), np.array(vec2)
+    return np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2))
+
 @app.get("/")
-def get_one(key:str=None,db:Session = Depends(get_db)):
-    output=[]
+async def get_query(query: Optional[str] = None):
+    try:
+        if not query:
+            response = supabase.table("metrics").select("*").execute()
+           
+            return {"success": True, "results": response.data[:50]  }
 
-    if key is None:
-        result = db.query(models.User).all()
-        for item in result:
-            output.append({"id":item.id,"metric_name":item.metric_name,"query":item.query,"description":item.description})
-        return {"data": output}
-            
-    else:
-        query_vector = model.encode(key)
-        query_tensor = torch.tensor(query_vector) 
-        for item in db.query(models.User).all():
-            key_vector = item.embedding
-            key_tensor = torch.tensor(key_vector)
-            similarity = cosine_similarity(query_tensor.unsqueeze(0), key_tensor.unsqueeze(0)).item()
-            output.append({"id":item.id,"metric_name":item.metric_name,"query":item.query,"description":item.description,"similarity":similarity})
-            output = sorted(output, key=lambda x: x['similarity'], reverse=True)
-            output = output[:5]
-        return {"data": output}
+        # Transform query locally using SentenceTransformer
+        transformed_query = model.encode(query).tolist()
 
-@app.post("/")
-def create_item(metrics: metric, db: Session = Depends(get_db)):
-    # Generate vector embedding
-    vector = model.encode(metrics.metric_name).tolist()
+        # Fetch stored queries with vector data~
+        response = supabase.table("metrics").select("*").execute()
 
-    # Check if the metric already exists
-    check = db.query(models.User).filter(models.User.metric_name == metrics.metric_name).first()
-    if check is None:
-        new_metric = models.User(
-            metric_name=metrics.metric_name,
-            query=metrics.query,
-            description=metrics.description,
-            embedding=np.array(vector)  
-        )
-        db.add(new_metric)
-        db.commit()
-        db.refresh(new_metric)
-        return {"message": "Created"}
-    else:
-        return {"message": "Already exists"}
-        
+        data = response.data
+        if not data:
+            return {"success": True, "results": []}
 
-@app.patch("/")
-def update_item(id:int,metrics:metric,db=Depends(get_db)):
+        similarity_results = []
 
-    check = db.query(models.User).filter(models.User.id == id).first()
-    if check is None:
-        return {"text": "Does not exist"}
-    check_metricname = db.query(models.User).filter(models.User.metric_name == metrics.metric_name).first()
-    if check_metricname is not None:
-        return {"text": "Metric name already exists"}
-    else:
-        check.metric_name = metrics.metric_name
-        check.query = metrics.query
-        check.description = metrics.description
-        db.commit()
-    return {"text": "Updated"}
+        for item in data:
+            query_vector = item.get("query_vector", [])
+            description_vector = item.get("description_vector", [])
+            metric_name_vector = item.get("metric_name_vector", [])
+            try:
+                query_vector = json.loads(item.get("query_vector", "[]")) if isinstance(item.get("query_vector"), str) else item.get("query_vector", [])
+                description_vector = json.loads(item.get("description_vector", "[]")) if isinstance(item.get("description_vector"), str) else item.get("description_vector", [])
+                metric_name_vector = json.loads(item.get("metric_name_vector", "[]")) if isinstance(item.get("metric_name_vector"), str) else item.get("metric_name_vector", [])
+            except json.JSONDecodeError:
+                continue  
 
-@app.delete("/")
-def delete_item(id: int,db=Depends(get_db)):
-    check = db.query(models.User).filter(models.User.id == id).first()
-    if check is None:
-        return {"text": "Does not exist"}
-    else:
-        db.delete(check)
-        db.commit()
-        return {"text": "Deleted"}
+            # Compute cosine similarity
+            sim1 = cosine_similarity(transformed_query, query_vector)
+            sim2 = cosine_similarity(transformed_query, description_vector)
+            sim3 = cosine_similarity(transformed_query, metric_name_vector)
+
+            max_similarity = max(sim1, sim2, sim3)
+
+            # Append to the results list
+            similarity_results.append({
+                "id": item["id"],
+                "query": item["query"],
+                "chart": item["chart"],
+                "metric_name": item["metric_name"],
+                "similarity": max_similarity
+            })
+
+        # Rank results by similarity and return top 5
+        ranked_queries = sorted(similarity_results, key=lambda x: x["similarity"], reverse=True)[:5]
+
+        return {"success": True, "results": ranked_queries}
+
+    except Exception as e:
+        return {"success": False, "message": "An error occurred", "error": str(e)}
 
 
 
     
+
+
+
+

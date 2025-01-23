@@ -1,8 +1,9 @@
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy import create_engine
+from supabase import create_client, Client
+from dotenv import load_dotenv
 
+load_dotenv()
 
-engine = create_engine("put ur db")
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
+SUPABASE_URL = ""
+SUPABASE_KEY = ""
+
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
