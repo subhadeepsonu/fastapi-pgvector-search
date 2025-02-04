@@ -1,11 +1,6 @@
 fastapi
 uvicorn
-sqlalchemy
-psycopg2
-pgvector
-pydantic
-torch
-sentence-transformers
-redis
-requests
+numpy
+scikit-learn
 python-dotenv
+supabase
